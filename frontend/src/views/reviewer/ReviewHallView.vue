@@ -14,6 +14,10 @@
 
     <!-- All proofread tasks waiting for review -->
     <div v-if="activeTab === 'all'">
+      <div v-if="reviewLimitReached" class="alert alert-error mb-3">
+        当前已接取 {{ myActiveReviewingCount }} / {{ MAX_ACTIVE_TASKS }} 个审核任务，请先完成部分任务后再继续接取。
+      </div>
+      <div v-if="error" class="alert alert-error mb-3">{{ error }}</div>
       <div v-if="loading" class="text-muted">加载中...</div>
       <div v-else-if="pendingReview.length === 0" class="empty-state">
         <div class="empty-state-icon">✅</div>
@@ -38,7 +42,12 @@
                 <td class="text-sm text-muted">{{ pg.expand?.proofreader?.name || '—' }}</td>
                 <td><span class="badge badge-proofread">待审核</span></td>
                 <td>
-                  <RouterLink :to="`/review/${pg.id}`" class="btn btn-primary btn-sm">开始审核</RouterLink>
+                  <RouterLink
+                    v-if="!reviewLimitReached"
+                    :to="`/review/${pg.id}`"
+                    class="btn btn-primary btn-sm"
+                  >开始审核</RouterLink>
+                  <span v-else class="text-sm text-muted">已达上限</span>
                 </td>
               </tr>
             </tbody>
@@ -54,6 +63,7 @@
 
     <!-- My reviewed tasks -->
     <div v-if="activeTab === 'mine'">
+      <div v-if="error" class="alert alert-error mb-3">{{ error }}</div>
       <div v-if="loading" class="text-muted">加载中...</div>
       <div v-else-if="myReviewed.length === 0" class="empty-state">
         <div class="empty-state-icon">📋</div>
@@ -95,11 +105,19 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
-import pb from '@/lib/pocketbase'
 import { useAuthStore } from '@/stores/auth'
+import { currentUserId } from '@/services/authService'
+import {
+  countActiveReviewerTasks,
+  listPendingReviewTasks,
+  listReviewerTasks
+} from '@/services/pagesService'
+import { MAX_ACTIVE_TASKS, statusLabel } from '@/constants/pageStatus'
+import { formatPbError } from '@/utils/pbErrors'
 
 const auth = useAuthStore()
 const loading = ref(true)
+const error = ref('')
 const activeTab = ref('all')
 const tabs = [
   { key: 'all', label: '全部待审核任务' },
@@ -113,6 +131,8 @@ const pendingTotalPages = ref(1)
 const myPage = ref(1)
 const myTotalPages = ref(1)
 const PAGE_SIZE = 50
+const myActiveReviewingCount = ref(0)
+const reviewLimitReached = ref(false)
 
 onMounted(async () => {
   await loadTasks()
@@ -120,25 +140,51 @@ onMounted(async () => {
 
 async function loadTasks() {
   loading.value = true
+  error.value = ''
   try {
-    const [pendingResult, mineResult] = await Promise.all([
-      pb.collection('pages').getList(pendingPage.value, PAGE_SIZE, {
-        filter: 'status="proofread"',
-        sort: 'page_number',
-        expand: 'project,proofreader'
-      }),
-      pb.collection('pages').getList(myPage.value, PAGE_SIZE, {
-        filter: `reviewer="${auth.user.id}"`,
-        sort: '-updated',
-        expand: 'project'
-      })
-    ])
-    pendingReview.value = pendingResult.items
-    pendingTotalPages.value = pendingResult.totalPages
-    myReviewed.value = mineResult.items
-    myTotalPages.value = mineResult.totalPages
+    const userId = currentUserId(auth.user)
+
+    const pendingPromise = listPendingReviewTasks(pendingPage.value, PAGE_SIZE)
+
+    const minePromise = userId
+      ? listReviewerTasks(userId, myPage.value, PAGE_SIZE)
+      : Promise.resolve({ items: [], totalPages: 1 })
+
+    const activeReviewingPromise = userId
+      ? countActiveReviewerTasks(userId)
+      : Promise.resolve(0)
+
+    const [pendingResult, mineResult, activeReviewingResult] = await Promise.allSettled([pendingPromise, minePromise, activeReviewingPromise])
+
+    if (pendingResult.status === 'fulfilled') {
+      pendingReview.value = pendingResult.value.items
+      pendingTotalPages.value = pendingResult.value.totalPages
+    } else {
+      pendingReview.value = []
+      pendingTotalPages.value = 1
+      error.value = formatPbError('加载待审核任务失败', pendingResult.reason)
+    }
+
+    if (mineResult.status === 'fulfilled') {
+      myReviewed.value = mineResult.value.items
+      myTotalPages.value = mineResult.value.totalPages
+    } else {
+      myReviewed.value = []
+      myTotalPages.value = 1
+      if (!error.value) {
+        error.value = formatPbError('加载我的审核任务失败', mineResult.reason)
+      }
+    }
+
+    if (activeReviewingResult.status === 'fulfilled') {
+      myActiveReviewingCount.value = Number(activeReviewingResult.value || 0)
+      reviewLimitReached.value = myActiveReviewingCount.value >= MAX_ACTIVE_TASKS
+    } else {
+      myActiveReviewingCount.value = 0
+      reviewLimitReached.value = false
+    }
   } catch (e) {
-    console.error(e)
+    error.value = formatPbError('加载审核任务失败', e)
   } finally {
     loading.value = false
   }
@@ -154,8 +200,4 @@ async function changeMyPage(p) {
   await loadTasks()
 }
 
-function statusLabel(s) {
-  const map = { approved: '已通过', rejected: '已打回', reviewing: '审核中' }
-  return map[s] || s
-}
 </script>

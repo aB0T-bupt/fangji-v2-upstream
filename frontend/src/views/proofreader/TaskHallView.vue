@@ -14,6 +14,10 @@
 
     <!-- All pending tasks -->
     <div v-if="activeTab === 'all'">
+      <div v-if="claimLimitReached" class="alert alert-error mb-3">
+        当前已接取 {{ myActiveClaimedCount }} / {{ MAX_ACTIVE_TASKS }} 个任务，请先完成部分任务后再继续认领。
+      </div>
+      <div v-if="error" class="alert alert-error mb-3">{{ error }}</div>
       <div v-if="loading" class="text-muted">加载中...</div>
       <div v-else-if="pendingPages.length === 0" class="empty-state">
         <div class="empty-state-icon">✅</div>
@@ -36,7 +40,7 @@
                 <td class="text-sm">{{ pg.expand?.project?.name || pg.project }}</td>
                 <td><span class="badge badge-pending">待校对</span></td>
                 <td>
-                  <button class="btn btn-primary btn-sm" @click="claimTask(pg)" :disabled="claiming === pg.id">
+                  <button class="btn btn-primary btn-sm" @click="claimTask(pg)" :disabled="claiming === pg.id || claimLimitReached">
                     {{ claiming === pg.id ? '认领中...' : '认领任务' }}
                   </button>
                 </td>
@@ -54,6 +58,7 @@
 
     <!-- My claimed tasks -->
     <div v-if="activeTab === 'mine'">
+      <div v-if="error" class="alert alert-error mb-3">{{ error }}</div>
       <div v-if="loading" class="text-muted">加载中...</div>
       <div v-else-if="myPages.length === 0" class="empty-state">
         <div class="empty-state-icon">📝</div>
@@ -77,7 +82,7 @@
                 <td><span :class="`badge badge-${pg.status}`">{{ statusLabel(pg.status) }}</span></td>
                 <td>
                   <RouterLink
-                    v-if="['claimed', 'proofreading', 'rejected'].includes(pg.status)"
+                    v-if="canEditProofreadTask(pg)"
                     :to="`/tasks/${pg.id}/edit`"
                     class="btn btn-primary btn-sm"
                   >进入校对</RouterLink>
@@ -100,12 +105,21 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { RouterLink } from 'vue-router'
-import pb from '@/lib/pocketbase'
 import { useAuthStore } from '@/stores/auth'
+import { currentUserId } from '@/services/authService'
+import {
+  claimProofreadTask,
+  countActiveProofreaderTasks,
+  listPendingProofreadTasks,
+  listProofreaderTasks
+} from '@/services/pagesService'
+import { MAX_ACTIVE_TASKS, PROOFREADER_ACTIVE_STATUSES, statusLabel } from '@/constants/pageStatus'
+import { formatClaimConflict, formatPbError } from '@/utils/pbErrors'
 
 const auth = useAuthStore()
 const loading = ref(true)
 const claiming = ref(null)
+const error = ref('')
 const activeTab = ref('all')
 const tabs = [
   { key: 'all', label: '全部待校对任务' },
@@ -119,6 +133,8 @@ const pendingTotalPages = ref(1)
 const myPage = ref(1)
 const myTotalPages = ref(1)
 const PAGE_SIZE = 50
+const myActiveClaimedCount = ref(0)
+const claimLimitReached = ref(false)
 
 onMounted(async () => {
   await loadTasks()
@@ -126,25 +142,51 @@ onMounted(async () => {
 
 async function loadTasks() {
   loading.value = true
+  error.value = ''
   try {
-    const [pendingResult, mineResult] = await Promise.all([
-      pb.collection('pages').getList(pendingPage.value, PAGE_SIZE, {
-        filter: 'status="pending"',
-        sort: 'page_number',
-        expand: 'project'
-      }),
-      pb.collection('pages').getList(myPage.value, PAGE_SIZE, {
-        filter: `proofreader="${auth.user.id}"`,
-        sort: '-updated',
-        expand: 'project'
-      })
-    ])
-    pendingPages.value = pendingResult.items
-    pendingTotalPages.value = pendingResult.totalPages
-    myPages.value = mineResult.items
-    myTotalPages.value = mineResult.totalPages
+    const userId = currentUserId(auth.user)
+
+    const pendingPromise = listPendingProofreadTasks(pendingPage.value, PAGE_SIZE)
+
+    const minePromise = userId
+      ? listProofreaderTasks(userId, myPage.value, PAGE_SIZE)
+      : Promise.resolve({ items: [], totalPages: 1 })
+
+    const activeCountPromise = userId
+      ? countActiveProofreaderTasks(userId)
+      : Promise.resolve(0)
+
+    const [pendingResult, mineResult, activeCountResult] = await Promise.allSettled([pendingPromise, minePromise, activeCountPromise])
+
+    if (pendingResult.status === 'fulfilled') {
+      pendingPages.value = pendingResult.value.items
+      pendingTotalPages.value = pendingResult.value.totalPages
+    } else {
+      pendingPages.value = []
+      pendingTotalPages.value = 1
+      error.value = formatPbError('加载待校对任务失败', pendingResult.reason)
+    }
+
+    if (mineResult.status === 'fulfilled') {
+      myPages.value = mineResult.value.items
+      myTotalPages.value = mineResult.value.totalPages
+    } else {
+      myPages.value = []
+      myTotalPages.value = 1
+      if (!error.value) {
+        error.value = formatPbError('加载我的任务失败', mineResult.reason)
+      }
+    }
+
+    if (activeCountResult.status === 'fulfilled') {
+      myActiveClaimedCount.value = Number(activeCountResult.value || 0)
+      claimLimitReached.value = myActiveClaimedCount.value >= MAX_ACTIVE_TASKS
+    } else {
+      myActiveClaimedCount.value = 0
+      claimLimitReached.value = false
+    }
   } catch (e) {
-    console.error(e)
+    error.value = formatPbError('加载任务失败', e)
   } finally {
     loading.value = false
   }
@@ -161,23 +203,29 @@ async function changeMyPage(p) {
 }
 
 async function claimTask(page) {
+  if (claimLimitReached.value) {
+    error.value = `最多只能同时接取 ${MAX_ACTIVE_TASKS} 个任务，请先完成已有任务`
+    return
+  }
   claiming.value = page.id
+  error.value = ''
   try {
-    await pb.collection('pages').update(page.id, {
-      status: 'claimed',
-      proofreader: auth.user.id
-    })
+    const userId = currentUserId(auth.user)
+    if (!userId) {
+      throw new Error('登录状态已失效，请重新登录')
+    }
+
+    await claimProofreadTask(page.id, userId)
     await loadTasks()
   } catch (e) {
-    alert('认领失败：' + (e?.response?.message || e.message))
+    error.value = `认领失败：${formatClaimConflict(e, '该任务可能已被其他校对员认领，请刷新后重试')}`
     await loadTasks()
   } finally {
     claiming.value = null
   }
 }
 
-function statusLabel(s) {
-  const map = { pending: '待校对', claimed: '已认领', proofreading: '校对中', proofread: '已提交待审核', reviewing: '审核中', approved: '已通过', rejected: '已打回' }
-  return map[s] || s
+function canEditProofreadTask(page) {
+  return PROOFREADER_ACTIVE_STATUSES.includes(page?.status)
 }
 </script>

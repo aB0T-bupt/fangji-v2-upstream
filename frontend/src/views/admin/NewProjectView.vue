@@ -33,11 +33,11 @@
 <script setup>
 import { ref } from 'vue'
 import { useRouter, RouterLink } from 'vue-router'
-import pb from '@/lib/pocketbase'
-import { useAuthStore } from '@/stores/auth'
+import { currentUserId } from '@/services/authService'
+import { createProject } from '@/services/projectsService'
+import { getPbMessage } from '@/utils/pbErrors'
 
 const router = useRouter()
-const auth = useAuthStore()
 const loading = ref(false)
 const error = ref('')
 const success = ref(false)
@@ -48,15 +48,20 @@ async function handleSubmit() {
   loading.value = true
   error.value = ''
   try {
-    const project = await pb.collection('projects').create({
+    const adminId = currentUserId()
+    if (!adminId) {
+      throw new Error('登录状态已失效，请重新登录后再创建项目')
+    }
+
+    const project = await createProject({
       name: form.value.name,
       description: form.value.description,
-      admin: auth.user.id
+      admin: adminId
     })
     success.value = true
     setTimeout(() => router.push(`/admin/projects/${project.id}`), 1200)
   } catch (e) {
-    error.value = e?.response?.message || '创建失败，请重试'
+    error.value = getPbMessage(e, '创建失败，请重试')
   } finally {
     loading.value = false
   }

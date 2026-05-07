@@ -1,24 +1,37 @@
 <template>
   <div class="editor-layout">
-    <!-- Left panel: original image -->
+    <!-- Left panel: project PDF -->
     <div class="editor-panel">
       <div class="editor-panel-header">
-        <span>📄 原始扫描图 — 第 {{ page?.page_number }} 页</span>
-        <RouterLink to="/review" class="btn btn-secondary btn-sm">← 返回</RouterLink>
+        <span>📄 项目原始 PDF</span>
+        <div class="flex gap-2">
+          <button
+            class="btn btn-secondary btn-sm"
+            :disabled="currentPdfPage <= allowedPdfPages[0]"
+            @click="switchPdfPage(-1)"
+          >上一页</button>
+          <button
+            class="btn btn-secondary btn-sm"
+            :disabled="currentPdfPage >= allowedPdfPages[1]"
+            @click="switchPdfPage(1)"
+          >下一页</button>
+          <RouterLink to="/review" class="btn btn-secondary btn-sm">← 返回</RouterLink>
+        </div>
       </div>
-      <div class="editor-panel-body" style="display:flex;align-items:flex-start;justify-content:center">
+      <div class="editor-panel-body" style="padding:0">
         <div v-if="loadingPage" class="text-muted">加载中...</div>
         <div v-else-if="!page" class="alert alert-error">页面不存在</div>
+        <div v-else-if="pdfError" class="alert alert-error" style="margin:1rem">{{ pdfError }}</div>
         <template v-else>
-          <img
-            v-if="imageUrl"
-            :src="imageUrl"
-            alt="原始扫描图"
-            style="max-width:100%;height:auto;border:1px solid var(--gray-200);border-radius:4px"
+          <PdfSinglePageViewer
+            v-if="pdfUrl"
+            :src="pdfUrl"
+            :page-number="currentPdfPage"
+            :watermark-user-id="reviewerId || ''"
           />
           <div v-else class="empty-state">
-            <div class="empty-state-icon">🖼️</div>
-            <div class="empty-state-text">暂无原始图片</div>
+            <div class="empty-state-icon">📕</div>
+            <div class="empty-state-text">暂无可预览的 PDF 文件</div>
           </div>
         </template>
       </div>
@@ -28,11 +41,23 @@
     <div class="editor-panel">
       <div class="editor-panel-header">
         <span>🔍 校对内容审核</span>
-        <div v-if="!isFinished" class="flex gap-2">
-          <button class="btn btn-success btn-sm" @click="approve" :disabled="saving">✓ 通过</button>
-          <button class="btn btn-danger btn-sm" @click="showRejectForm = !showRejectForm" :disabled="saving">✗ 打回修改</button>
+        <div class="flex gap-2">
+          <button
+            class="btn btn-secondary btn-sm"
+            @click="gotoPrevTask"
+            :disabled="!hasNeighborTasks || saving || loadingPage"
+          >上一条任务</button>
+          <button
+            class="btn btn-secondary btn-sm"
+            @click="gotoNextTask"
+            :disabled="!hasNeighborTasks || saving || loadingPage"
+          >下一条任务</button>
+          <template v-if="!isFinished">
+            <button class="btn btn-success btn-sm" @click="approve" :disabled="saving">✓ 通过</button>
+            <button class="btn btn-danger btn-sm" @click="showRejectForm = !showRejectForm" :disabled="saving">✗ 打回修改</button>
+          </template>
+          <span v-else :class="`badge badge-${page.status}`" style="font-size:.9rem">{{ statusLabel(page?.status) }}</span>
         </div>
-        <span v-else :class="`badge badge-${page.status}`" style="font-size:.9rem">{{ statusLabel(page?.status) }}</span>
       </div>
       <div class="editor-panel-body">
         <div v-if="loadingPage" class="text-muted">加载中...</div>
@@ -41,40 +66,42 @@
           <div v-if="saved" class="alert alert-success mb-3">操作成功！</div>
           <div v-if="saveError" class="alert alert-error mb-3">{{ saveError }}</div>
 
-          <!-- Reject form -->
+          <div class="table-wrapper mb-3">
+            <table>
+              <tbody>
+                <tr>
+                  <th
+                    v-for="header in rowHeaders"
+                    :key="`h-${header}`"
+                    class="text-sm font-semibold"
+                    style="min-width:180px"
+                  >{{ header }}</th>
+                </tr>
+                <tr>
+                  <td
+                    v-for="header in rowHeaders"
+                    :key="`v-${header}`"
+                    style="vertical-align:top;min-width:180px"
+                  >
+                    <textarea
+                      v-model="editedRow[header]"
+                      class="form-control"
+                      style="min-height:84px;font-family:'Noto Sans',serif"
+                      @focus="activeField = header"
+                    ></textarea>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
           <div v-if="showRejectForm" class="card mb-3" style="border:1px solid var(--danger)">
             <div class="card-title" style="color:var(--danger)">打回修改</div>
-            <p class="text-sm text-muted mb-2">可在下方直接修改文本后打回，校对员将看到修改建议。</p>
-            <textarea
-              ref="rejectTextareaRef"
-              v-model="editedText"
-              class="form-control mb-3"
-              style="min-height:120px;font-family:'Noto Sans',serif"
-            ></textarea>
+            <p class="text-sm text-muted mb-2">可在表格中直接改动后打回。</p>
             <IpaKeyboard @insert="insertText" />
             <div class="flex gap-2 mt-3">
               <button class="btn btn-danger btn-sm" @click="reject" :disabled="saving">确认打回</button>
               <button class="btn btn-secondary btn-sm" @click="showRejectForm = false">取消</button>
-            </div>
-          </div>
-
-          <!-- Diff display -->
-          <div class="mb-3">
-            <div class="flex gap-3 mb-2" style="font-size:.82rem">
-              <span style="background:#ffe4e6;padding:.1rem .4rem;border-radius:3px;color:#be123c">删除</span>
-              <span style="background:#dcfce7;padding:.1rem .4rem;border-radius:3px;color:#15803d">新增</span>
-            </div>
-            <div
-              style="white-space:pre-wrap;font-family:'Noto Sans',serif;font-size:1rem;line-height:1.7;border:1px solid var(--gray-200);border-radius:var(--radius);padding:1rem;background:#fff;min-height:200px"
-            >
-              <template v-for="(part, i) in diffParts" :key="i">
-                <span
-                  :class="{
-                    'diff-del': part.type === 'delete',
-                    'diff-add': part.type === 'insert'
-                  }"
-                >{{ part.text }}</span>
-              </template>
             </div>
           </div>
 
@@ -99,14 +126,21 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue'
-import { useRoute, RouterLink } from 'vue-router'
-import pb from '@/lib/pocketbase'
+import { computed, ref, watch } from 'vue'
+import { useRoute, useRouter, RouterLink } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { diffTexts } from '@/lib/diff'
 import IpaKeyboard from '@/components/editor/IpaKeyboard.vue'
+import PdfSinglePageViewer from '@/components/editor/PdfSinglePageViewer.vue'
+import { useProjectPdf } from '@/composables/useProjectPdf'
+import { useStructuredRow } from '@/composables/useStructuredRow'
+import { useTaskNeighbors } from '@/composables/useTaskNeighbors'
+import { PAGE_STATUS, REVIEW_FINISHED_STATUSES, statusLabel } from '@/constants/pageStatus'
+import { currentUserId } from '@/services/authService'
+import { getPage, listReviewerNeighborTasks, updatePage } from '@/services/pagesService'
+import { formatClaimConflict, getPbMessage } from '@/utils/pbErrors'
 
 const route = useRoute()
+const router = useRouter()
 const auth = useAuthStore()
 
 const page = ref(null)
@@ -115,85 +149,131 @@ const saving = ref(false)
 const saved = ref(false)
 const saveError = ref('')
 const showRejectForm = ref(false)
-const editedText = ref('')
-const rejectTextareaRef = ref(null)
 
-const imageUrl = computed(() => {
-  if (!page.value?.image) return null
-  return pb.files.getUrl(page.value, page.value.image)
-})
+const reviewerId = computed(() => currentUserId(auth.user))
+const {
+  rowHeaders,
+  proofreadRow,
+  editedRow,
+  activeField,
+  hydrateForReview,
+  composeCurrentText,
+  insertText: insertIntoActiveField,
+  stringifyEditedRow
+} = useStructuredRow()
 
-const diffParts = computed(() => {
-  if (!page.value) return []
-  return diffTexts(page.value.ocr_text || '', page.value.proofread_text || '')
+const {
+  pdfError,
+  currentPdfPage,
+  allowedPdfPages,
+  pdfUrl,
+  resetPdf,
+  resolveProjectPdf,
+  switchPdfPage,
+  syncToBasePage
+} = useProjectPdf(page)
+
+const {
+  prevTaskId,
+  nextTaskId,
+  hasNeighborTasks,
+  resetNeighbors,
+  loadNeighbors
+} = useTaskNeighbors(page, async (currentPage) => {
+  if (!currentPage?.project) return []
+  return listReviewerNeighborTasks(currentPage.project, reviewerId.value)
 })
 
 const isFinished = computed(() => {
   return page.value && (
-    ['approved', 'rejected'].includes(page.value.status) ||
-    (page.value.status === 'reviewing' && page.value.reviewer !== auth.user.id)
+    REVIEW_FINISHED_STATUSES.includes(page.value.status) ||
+    (page.value.status === PAGE_STATUS.REVIEWING && page.value.reviewer !== reviewerId.value)
   )
 })
 
-onMounted(async () => {
+watch(() => route.params.id, async () => {
+  await loadPage()
+}, { immediate: true })
+
+async function loadPage() {
+  loadingPage.value = true
+  page.value = null
+  resetNeighbors()
+  resetPdf()
+  saveError.value = ''
+  saved.value = false
+  showRejectForm.value = false
+
   try {
-    page.value = await pb.collection('pages').getOne(route.params.id)
-    editedText.value = page.value.proofread_text || page.value.ocr_text || ''
-    // Mark as "reviewing" if status is "proofread".
-    // The server hook enforces that only one reviewer can transition a page from
-    // "proofread" to "reviewing", so if this update fails the page was already
-    // claimed by another reviewer.
-    if (page.value.status === 'proofread') {
+    page.value = await getPage(route.params.id, { expand: 'project_file' })
+    syncToBasePage()
+    hydrateForReview(page.value)
+    await resolveProjectPdf()
+    await loadNeighbors()
+    if (page.value.status === PAGE_STATUS.PROOFREAD) {
       try {
-        await pb.collection('pages').update(page.value.id, {
-          status: 'reviewing',
-          reviewer: auth.user.id
+        await updatePage(page.value.id, {
+          status: PAGE_STATUS.REVIEWING,
+          reviewer: reviewerId.value
         })
-        page.value.status = 'reviewing'
-        page.value.reviewer = auth.user.id
+        page.value.status = PAGE_STATUS.REVIEWING
+        page.value.reviewer = reviewerId.value
+        await loadNeighbors()
       } catch (lockErr) {
-        // Re-fetch to get the latest status/reviewer
-        page.value = await pb.collection('pages').getOne(route.params.id)
-        editedText.value = page.value.proofread_text || page.value.ocr_text || ''
-        saveError.value = lockErr?.response?.message || '该任务已被其他审核员占用，您可以查看但无法操作。'
+        page.value = await getPage(route.params.id, { expand: 'project_file' })
+        hydrateForReview(page.value)
+        await resolveProjectPdf()
+        await loadNeighbors()
+        saveError.value = formatClaimConflict(lockErr, '该任务已被其他审核员占用，您可以查看但无法操作。')
       }
     }
   } catch (e) {
-    console.error(e)
+    saveError.value = formatClaimConflict(e, '加载审核任务失败，请返回审核大厅刷新后重试')
   } finally {
     loadingPage.value = false
   }
-})
+}
+
+function gotoPrevTask() {
+  if (!prevTaskId.value) return
+  router.push(`/review/${prevTaskId.value}`)
+}
+
+function gotoNextTask() {
+  if (!nextTaskId.value) return
+  router.push(`/review/${nextTaskId.value}`)
+}
 
 function insertText(char) {
-  const el = rejectTextareaRef.value
-  if (!el) {
-    editedText.value += char
-    return
-  }
-  const start = el.selectionStart
-  const end = el.selectionEnd
-  editedText.value = editedText.value.slice(0, start) + char + editedText.value.slice(end)
-  setTimeout(() => {
-    el.selectionStart = el.selectionEnd = start + char.length
-    el.focus()
-  }, 0)
+  insertIntoActiveField(char)
 }
 
 async function approve() {
   saving.value = true
   saved.value = false
   saveError.value = ''
+  const targetNextId = nextTaskId.value
+  const nextProofreadText = composeCurrentText(editedRow.value)
   try {
-    await pb.collection('pages').update(page.value.id, {
-      status: 'approved',
-      reviewer: auth.user.id,
+    await updatePage(page.value.id, {
+      proofread_row_json: stringifyEditedRow(),
+      proofread_text: nextProofreadText,
+      status: PAGE_STATUS.APPROVED,
+      reviewer: reviewerId.value,
       reviewed_at: new Date().toISOString()
     })
-    page.value.status = 'approved'
+    if (targetNextId) {
+      await router.push(`/review/${targetNextId}`)
+      return
+    }
+    page.value.status = PAGE_STATUS.APPROVED
+    page.value.proofread_text = nextProofreadText
+    page.value.proofread_row_json = stringifyEditedRow()
+    hydrateForReview(page.value)
     saved.value = true
+    await loadNeighbors()
   } catch (e) {
-    saveError.value = e?.response?.message || '操作失败，请重试'
+    saveError.value = getPbMessage(e, '操作失败，请重试')
   } finally {
     saving.value = false
   }
@@ -203,26 +283,32 @@ async function reject() {
   saving.value = true
   saved.value = false
   saveError.value = ''
+  const targetNextId = nextTaskId.value
+  const nextProofreadText = composeCurrentText(editedRow.value)
   try {
-    await pb.collection('pages').update(page.value.id, {
-      status: 'rejected',
-      reviewer: auth.user.id,
+    await updatePage(page.value.id, {
+      status: PAGE_STATUS.REJECTED,
+      reviewer: reviewerId.value,
       reviewed_at: new Date().toISOString(),
-      proofread_text: editedText.value
+      proofread_row_json: stringifyEditedRow(),
+      proofread_text: nextProofreadText
     })
-    page.value.status = 'rejected'
-    page.value.proofread_text = editedText.value
+    if (targetNextId) {
+      await router.push(`/review/${targetNextId}`)
+      return
+    }
+    page.value.status = PAGE_STATUS.REJECTED
+    page.value.proofread_text = nextProofreadText
+    page.value.proofread_row_json = stringifyEditedRow()
+    hydrateForReview(page.value)
     saved.value = true
     showRejectForm.value = false
+    await loadNeighbors()
   } catch (e) {
-    saveError.value = e?.response?.message || '操作失败，请重试'
+    saveError.value = getPbMessage(e, '操作失败，请重试')
   } finally {
     saving.value = false
   }
 }
-
-function statusLabel(s) {
-  const map = { approved: '已通过', rejected: '已打回', reviewing: '审核中' }
-  return map[s] || s
-}
 </script>
+
