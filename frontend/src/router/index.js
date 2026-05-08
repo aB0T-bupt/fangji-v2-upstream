@@ -10,8 +10,7 @@ function getAuthState() {
     isLoggedIn,
     role,
     isAdmin: role === 'admin',
-    isProofreader: role === 'proofreader',
-    isReviewer: role === 'reviewer'
+    isProofreader: role === 'proofreader'
   }
 }
 
@@ -22,7 +21,6 @@ function getHomePath() {
   if (!auth.isLoggedIn) return '/login'
   if (auth.isAdmin) return '/admin'
   if (auth.isProofreader) return '/tasks'
-  if (auth.isReviewer) return '/review'
   return '/login'
 }
 
@@ -76,26 +74,14 @@ const routes = [
         component: () => import('@/views/proofreader/TaskHallView.vue')
       },
       {
+        path: 'profile',
+        name: 'ProofreaderProfile',
+        component: () => import('@/views/proofreader/ProfileView.vue')
+      },
+      {
         path: ':id/edit',
         name: 'ProofreadEditor',
         component: () => import('@/views/proofreader/ProofreadEditorView.vue')
-      }
-    ]
-  },
-  {
-    path: '/review',
-    component: () => import('@/views/reviewer/ReviewerLayout.vue'),
-    meta: { requiresAuth: true, role: 'reviewer' },
-    children: [
-      {
-        path: '',
-        name: 'ReviewHall',
-        component: () => import('@/views/reviewer/ReviewHallView.vue')
-      },
-      {
-        path: ':id',
-        name: 'ReviewEditor',
-        component: () => import('@/views/reviewer/ReviewEditorView.vue')
       }
     ]
   },
