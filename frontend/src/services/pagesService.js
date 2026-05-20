@@ -216,13 +216,19 @@ export async function claimNextProjectPage(projectId, userId) {
   })
 
   const claimable = candidates.filter((page) => isPageClaimableBy(page, userId))
+  let lastClaimError = null
   for (const page of claimable) {
     try {
       return await claimProofreadTask(page.id, userId)
-    } catch {
+    } catch (error) {
+      lastClaimError = error
       // Another proofreader may have claimed this page between list and update.
       // Continue through the ordered queue and surface an error only if none work.
     }
+  }
+
+  if (claimable.length && lastClaimError) {
+    throw lastClaimError
   }
 
   return null
@@ -257,7 +263,7 @@ export async function submitTwoPassProofread(pageId, userId, { rowJson, text }) 
   }
 
   if (firstProofreader === userId) {
-    throw new Error('第二次校对必须由另一位校对员完成')
+    throw new Error('该条目需要由其他校对员处理')
   }
 
   const normalizedFirst = normalizeProofreadPayload(latest.first_proofread_row_json, latest.first_proofread_text)
