@@ -41,6 +41,127 @@
 //       proofreader 可领取 pending 或 proofread（二校）页面，且可更新自己负责的页面
 //   - deleteRule: @request.auth.role = "admin"
 
+onAfterBootstrap((e) => {
+  if (($os.getenv("FANGJI_SKIP_ADMIN_BOOTSTRAP") || "").trim() === "1") {
+    return
+  }
+
+  const trimEnv = (name) => ($os.getenv(name) || "").trim()
+
+  const ensureInitialAppAdmin = () => {
+    const email = trimEnv("APP_ADMIN_EMAIL").toLowerCase()
+    const password = $os.getenv("APP_ADMIN_PASSWORD") || ""
+    const name = trimEnv("APP_ADMIN_NAME") || "管理员"
+    const username = `admin_${email.split("@")[0]}`
+      .toLowerCase()
+      .replace(/[^a-z0-9_]/g, "_")
+
+    if (!email && !password) {
+      return
+    }
+    if (!email || !password) {
+      console.warn("APP_ADMIN_EMAIL and APP_ADMIN_PASSWORD must be set together; skipping app admin bootstrap.")
+      return
+    }
+    if (password.length < 8) {
+      console.warn("APP_ADMIN_PASSWORD must be at least 8 characters; skipping app admin bootstrap.")
+      return
+    }
+
+    const dao = $app.dao()
+    let users = null
+    try {
+      users = dao.findCollectionByNameOrId("users")
+    } catch {
+      console.warn("users collection is not ready yet; skipping app admin bootstrap until migrations finish.")
+      return
+    }
+    if (!users.schema.getFieldByName("role")) {
+      console.warn("users.role is not ready yet; skipping app admin bootstrap until migrations finish.")
+      return
+    }
+
+    let existing = null
+    try {
+      existing = dao.findAuthRecordByEmail("users", email)
+    } catch {}
+
+    if (existing) {
+      let changed = false
+      if (existing.getString("role") !== "admin") {
+        existing.set("role", "admin")
+        changed = true
+      }
+      if (!existing.verified()) {
+        existing.setVerified(true)
+        changed = true
+      }
+      existing.setPassword(password)
+      changed = true
+      if (changed) {
+        dao.saveRecord(existing)
+        console.log("Updated existing app admin:", email)
+      }
+      return
+    }
+
+    const record = new Record(users)
+    record.set("username", username)
+    record.setEmail(email)
+    record.setEmailVisibility(true)
+    record.setPassword(password)
+    record.setVerified(true)
+    record.set("name", name)
+    record.set("role", "admin")
+    dao.saveRecord(record)
+    console.log("Created initial app admin:", email)
+  }
+
+  const ensureInitialPocketBaseAdmin = () => {
+    const email = trimEnv("PB_ADMIN_EMAIL").toLowerCase()
+    const password = $os.getenv("PB_ADMIN_PASSWORD") || ""
+
+    if (!email && !password) {
+      return
+    }
+    if (!email || !password) {
+      console.warn("PB_ADMIN_EMAIL and PB_ADMIN_PASSWORD must be set together; skipping PocketBase admin bootstrap.")
+      return
+    }
+    if (password.length < 10) {
+      console.warn("PB_ADMIN_PASSWORD must be at least 10 characters; skipping PocketBase admin bootstrap.")
+      return
+    }
+
+    const dao = $app.dao()
+    try {
+      const existing = dao.findAdminByEmail(email)
+      existing.setPassword(password)
+      dao.saveAdmin(existing)
+      console.log("Updated existing PocketBase admin:", email)
+      return
+    } catch {}
+
+    const admin = new Admin()
+    admin.email = email
+    admin.setPassword(password)
+    dao.saveAdmin(admin)
+    console.log("Created initial PocketBase admin:", email)
+  }
+
+  try {
+    ensureInitialAppAdmin()
+  } catch (err) {
+    console.warn("App admin bootstrap skipped:", err)
+  }
+
+  try {
+    ensureInitialPocketBaseAdmin()
+  } catch (err) {
+    console.warn("PocketBase admin bootstrap skipped:", err)
+  }
+})
+
 // Hook: when a project_file is created, log it (actual OCR processing
 // would be done by an external worker or manual upload)
 onRecordAfterCreateRequest((e) => {

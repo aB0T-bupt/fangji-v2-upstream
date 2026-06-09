@@ -1,0 +1,35 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "${BACKEND_PORT:-127.0.0.1:8090}:8090"
+    environment:
+      - APP_ADMIN_EMAIL=${APP_ADMIN_EMAIL:-}
+      - APP_ADMIN_PASSWORD=${APP_ADMIN_PASSWORD:-}
+      - APP_ADMIN_NAME=${APP_ADMIN_NAME:-管理员}
+      - PB_ADMIN_EMAIL=${PB_ADMIN_EMAIL:-}
+      - PB_ADMIN_PASSWORD=${PB_ADMIN_PASSWORD:-}
+      - PB_ALLOWED_ORIGINS=${PB_ALLOWED_ORIGINS:-}
+    volumes:
+      - ./pb_data:/pb/pb_data
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      target: dev
+    working_dir: /app
+    command: npm run dev -- --host 0.0.0.0
+    ports:
+      - "${DEV_FRONTEND_PORT:-5250}:${DEV_FRONTEND_PORT:-5250}"
+    environment:
+      - VITE_PB_URL=${DEV_PB_URL:-http://127.0.0.1:8090}
+      - VITE_DEV_SERVER_PORT=${DEV_FRONTEND_PORT:-5250}
+      - VITE_ALLOWED_HOSTS=${VITE_ALLOWED_HOSTS:-true}
+      - CHOKIDAR_USEPOLLING=true
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    restart: unless-stopped

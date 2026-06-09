@@ -1,34 +1,38 @@
 services:
   backend:
     build: ./backend
-    ports:
-      - "8090:8090"
+    # Optional host-side backend binding for local reverse proxy/debug access.
+    # Traefik deployments should keep this disabled and let frontend proxy /api to backend:8090.
+    # ports:
+    #   - "${BACKEND_PORT:-127.0.0.1:8090}:8090"
+    environment:
+      - APP_ADMIN_EMAIL=${APP_ADMIN_EMAIL:-}
+      - APP_ADMIN_PASSWORD=${APP_ADMIN_PASSWORD:-}
+      - APP_ADMIN_NAME=${APP_ADMIN_NAME:-管理员}
+      - PB_ADMIN_EMAIL=${PB_ADMIN_EMAIL:-}
+      - PB_ADMIN_PASSWORD=${PB_ADMIN_PASSWORD:-}
+      - PB_ALLOWED_ORIGINS=${PB_ALLOWED_ORIGINS:-}
     volumes:
-      # Persist PocketBase data (uploads, database) across container restarts
-      - pb_data:/pb/pb_data
+      # Persist PocketBase data on the host for easy backup and migration.
+      - ./pb_data:/pb/pb_data
     restart: unless-stopped
 
   frontend:
     build:
       context: ./frontend
-    working_dir: /app
-    command: npm run dev -- --host 0.0.0.0
-    ports:
-      - "5250:5250"
+    # Optional direct host port mapping. Keep disabled when Traefik routes to this container.
+    # ports:
+    #   - "${FRONTEND_PORT:-8080}:80"
+    labels:
+      - "traefik.enable=${TRAEFIK_ENABLE:-true}"
+      - "traefik.http.routers.fangji.rule=Host(`${TRAEFIK_HOST:-fangji.example.com}`)"
+      - "traefik.http.routers.fangji.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}"
+      - "traefik.http.routers.fangji.tls=true"
+      - "traefik.http.routers.fangji.tls.certresolver=${TRAEFIK_CERT_RESOLVER:-letsencrypt}"
+      # Traefik should route to the frontend Nginx container port, not the host port or backend port.
+      - "traefik.http.services.fangji.loadbalancer.server.port=80"
     environment:
-      - VITE_PB_URL=http://localhost:8090
-      # 5173 may be reserved by Windows excluded port ranges, so Docker dev uses 5250.
-      - VITE_DEV_SERVER_PORT=5250
-      # Windows / Docker Desktop 热更新关键
-      - CHOKIDAR_USEPOLLING=true
-    volumes:
-      # 本地代码挂载 → 实现热更新
-      - ./frontend:/app
-      # 防止 node_modules 被覆盖
-      - /app/node_modules
+      - VITE_BACKEND_URL=${BACKEND_URL:-}
     depends_on:
       - backend
     restart: unless-stopped
-
-volumes:
-  pb_data:
