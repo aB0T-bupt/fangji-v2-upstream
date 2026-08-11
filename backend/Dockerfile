@@ -1,4 +1,4 @@
-FROM alpine:3.19
+FROM alpine:3.24
 
 ARG PB_VERSION=0.21.3
 ARG TARGETARCH=amd64
