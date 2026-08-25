@@ -42,16 +42,19 @@
           <!-- PDF upload -->
           <div>
             <h4 class="font-semibold mb-2">上传 PDF 文件</h4>
-            <p class="text-sm text-muted mb-3">上传扫描版PDF，系统将自动按页拆分并进行OCR识别（后台处理，可能需要几分钟）。</p>
+            <p class="text-sm text-muted mb-3">上传扫描版 PDF 作为校对原文预览。当前系统不会自动 OCR 或生成条目，请通过 CSV 导入待校对文本。</p>
             <input type="file" accept=".pdf" @change="onPdfSelected" ref="pdfInput" style="display:none" />
             <button class="btn btn-secondary" @click="$refs.pdfInput.click()">选择 PDF 文件</button>
             <span v-if="pdfFile" class="text-sm ml-2">{{ pdfFile.name }}</span>
             <div v-if="pdfFile" class="mt-3">
               <button class="btn btn-primary" @click="uploadPdf" :disabled="uploadingPdf">
-                {{ uploadingPdf ? '上传中...' : '上传 PDF' }}
+                {{ uploadingPdf ? '上传处理中...' : '上传 PDF' }}
               </button>
             </div>
-            <div v-if="pdfSuccess" class="alert alert-success mt-2">PDF 上传成功！</div>
+            <div v-if="pdfProcessing" class="alert mt-2">PDF 已上传，后端正在校验文件...</div>
+            <div v-if="pdfSuccess" class="alert alert-success mt-2">
+              PDF 深度校验完成，共 {{ pdfMetadata?.page_count || 0 }} 页，已设为项目主 PDF，可在校对编辑器中预览。
+            </div>
             <div v-if="pdfError" class="alert alert-error mt-2">{{ pdfError }}</div>
           </div>
 
@@ -59,19 +62,94 @@
           <div>
             <h4 class="font-semibold mb-2">上传 CSV 文件（每行一条待校对文本）</h4>
             <p class="text-sm text-muted mb-3">
-              CSV 需包含字段 <code>PDF页码</code>。<br>
-              系统会将每行去掉 <code>PDF页码</code> 字段后的内容导入为新条目。
+              CSV 需包含 <code>PDF页码</code>、<code>page</code>、<code>pdf_page</code> 或 <code>页码</code> 中的一个字段。<br>
+              系统会在后端预检，并将每行去掉页码字段后的内容导入为新条目。
             </p>
             <input type="file" accept=".csv" @change="onCsvSelected" ref="csvInput" style="display:none" />
             <button class="btn btn-secondary" @click="$refs.csvInput.click()">选择 CSV 文件</button>
             <span v-if="csvFile" class="text-sm ml-2">{{ csvFile.name }}</span>
             <div v-if="csvFile" class="mt-3">
               <button class="btn btn-primary" @click="uploadCsv" :disabled="uploadingCsv">
-                {{ uploadingCsv ? '导入中...' : '导入 CSV' }}
+                {{ uploadingCsv ? '后端预检中...' : '后端预检 CSV' }}
+              </button>
+            </div>
+            <div v-if="csvJob" class="import-job-card mt-3">
+              <div class="flex items-center justify-between gap-2">
+                <strong>{{ csvJobStatusLabel }}</strong>
+                <span class="text-sm text-muted">作业 {{ csvJob.id }}</span>
+              </div>
+              <div class="progress mt-2">
+                <div class="progress-bar" :style="{ width: csvJobProgress + '%' }"></div>
+              </div>
+              <div class="text-sm mt-2">
+                已处理 {{ csvJob.processed_count || 0 }} 条；
+                成功 {{ csvJob.success_count || 0 }} 条；
+                跳过 {{ csvJob.failed_count || 0 }} 条
+              </div>
+              <div v-if="csvJob.error_message && csvJob.status !== 'failed'" class="text-sm text-muted mt-1">{{ csvJob.error_message }}</div>
+            </div>
+            <div v-if="csvInspection" class="csv-inspection mt-3">
+              <div class="font-semibold">后端预检结果</div>
+              <div class="text-sm mt-2">
+                编码：{{ csvInspection.encoding || '未知' }}；
+                页码字段：<code>{{ csvInspection.pdfPageField }}</code>；
+                页码范围：{{ csvInspection.minPdfPage && csvInspection.maxPdfPage ? `${csvInspection.minPdfPage}–${csvInspection.maxPdfPage}` : '无有效页码' }}；
+                共 {{ csvInspection.totalRows }} 行，可导入 {{ csvInspection.validRows }} 行，需跳过 {{ csvInspection.invalidRows }} 行。
+              </div>
+              <div class="text-sm mt-2">
+                检测到的表头：<code>{{ csvInspection.headers.join('、') }}</code>
+              </div>
+              <div v-if="csvInspection.preview.length" class="table-wrapper mt-2">
+                <table>
+                  <thead>
+                    <tr><th v-for="header in csvPreviewHeaders" :key="header">{{ header }}</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(row, index) in csvInspection.preview" :key="index">
+                      <td v-for="header in csvPreviewHeaders" :key="header">{{ row[header] }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <button
+                v-if="csvJob?.status === 'validated'"
+                class="btn btn-primary mt-3"
+                @click="confirmCsvImport"
+                :disabled="uploadingCsv"
+              >
+                {{ uploadingCsv ? '导入处理中...' : '确认导入' }}
               </button>
             </div>
             <div v-if="csvSuccess" class="alert alert-success mt-2">{{ csvSuccess }}</div>
-            <div v-if="csvError" class="alert alert-error mt-2">{{ csvError }}</div>
+            <div v-if="csvError" class="alert alert-error mt-2" style="white-space:pre-line">{{ csvError }}</div>
+            <div v-if="csvImportErrors.length" class="mt-3">
+              <div class="font-semibold mb-2">
+                错误明细（显示前 {{ csvImportErrors.length }} 条）
+              </div>
+              <div class="table-wrapper import-error-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>CSV 行</th>
+                      <th>字段</th>
+                      <th>错误代码</th>
+                      <th>原因</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="item in csvImportErrors" :key="item.id">
+                      <td>{{ item.row_number || '—' }}</td>
+                      <td>{{ item.column_name || '—' }}</td>
+                      <td><code>{{ item.error_code }}</code></td>
+                      <td>
+                        {{ item.message }}
+                        <span v-if="item.raw_value" class="text-muted">（值：{{ item.raw_value }}）</span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -93,24 +171,74 @@
 
       <!-- Pages list -->
       <div class="card">
-        <div class="card-title">文本条目列表 ({{ pages.length }} 条)</div>
+        <div class="card-title">
+          文本条目列表（共 {{ pages.length }} 条<span v-if="hasActiveListFilter">，筛选出 {{ filteredPages.length }} 条</span>）
+        </div>
+        <div v-if="mutationSuccess" class="alert alert-success" role="status">{{ mutationSuccess }}</div>
+        <div v-if="mutationError" class="alert alert-error" role="alert">{{ mutationError }}</div>
+        <div v-if="pages.length" class="admin-list-filters mb-4">
+          <label class="admin-filter-field">
+            <span>搜索条目</span>
+            <input
+              v-model="searchQuery"
+              type="search"
+              class="form-control"
+              placeholder="条号、PDF页码、文本或校对员"
+            />
+          </label>
+          <label class="admin-filter-field">
+            <span>状态</span>
+            <select v-model="selectedStatus" class="form-control">
+              <option value="">全部状态</option>
+              <option v-for="option in statusOptions" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+          </label>
+          <label class="admin-filter-field admin-filter-size">
+            <span>每页显示</span>
+            <select v-model.number="listPageSize" class="form-control">
+              <option :value="10">10 条</option>
+              <option :value="25">25 条</option>
+              <option :value="50">50 条</option>
+              <option :value="100">100 条</option>
+            </select>
+          </label>
+          <button
+            v-if="hasActiveListFilter"
+            type="button"
+            class="btn btn-secondary btn-sm"
+            @click="resetListFilters"
+          >
+            清除筛选
+          </button>
+        </div>
         <div v-if="loadingPages" class="text-muted text-sm">加载中...</div>
+        <div v-else-if="pagesError" class="alert alert-error">
+          {{ pagesError }}
+          <button type="button" class="btn btn-secondary btn-sm ml-2" @click="loadPages">重新加载</button>
+        </div>
         <div v-else-if="pages.length === 0" class="empty-state">
           <div class="empty-state-icon">📄</div>
-          <div class="empty-state-text">暂无条目，请上传 PDF 或 CSV 文件</div>
+          <div class="empty-state-text">暂无条目，请上传 CSV 文件</div>
         </div>
-        <div v-else class="table-wrapper">
-          <div class="flex items-center justify-between mb-3">
+        <div v-else-if="filteredPages.length === 0" class="empty-state">
+          <div class="empty-state-icon">🔎</div>
+          <div class="empty-state-text">没有符合当前条件的条目</div>
+          <button type="button" class="btn btn-secondary mt-3" @click="resetListFilters">清除筛选</button>
+        </div>
+        <div v-else>
+          <div class="admin-table-actions mb-3">
             <div class="text-sm text-muted">
-              已选择 {{ selectedPendingIds.length }} 条待校对条目
+              已选择 {{ selectedPendingIds.length }} 条待校对条目；范围按完整列表条号选择
             </div>
-            <div class="flex gap-2">
+            <div class="admin-bulk-actions">
               <input
                 v-model.trim="rangeSelectInput"
                 type="text"
                 class="form-control"
-                style="width: 220px;"
                 placeholder="输入范围，如 1-33 或 1,3,5-8"
+                aria-label="按完整列表范围选择条目"
                 :disabled="mutatingRows"
               />
               <button class="btn btn-secondary btn-sm" @click="selectByRange" :disabled="mutatingRows || !rangeSelectInput">
@@ -127,6 +255,7 @@
               </button>
             </div>
           </div>
+          <div class="table-wrapper">
           <table>
             <thead>
               <tr>
@@ -135,28 +264,40 @@
                 <th>状态</th>
                 <th>一校</th>
                 <th>二校</th>
-                <th>退回次数</th>
+                <th>不一致次数</th>
                 <th>OCR文本预览</th>
+                <th style="width:100px">操作</th>
                 <th style="width:160px">顺序</th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(pg, idx) in pages" :key="pg.id">
+              <tr v-for="(pg, idx) in displayedPages" :key="pg.id">
                 <td>
                   <input
                     type="checkbox"
                     :checked="selectedPendingIds.includes(pg.id)"
                     :disabled="!isPending(pg) || mutatingRows"
+                    :aria-label="`选择第 ${formatItemNo(pg.page_number, displayedPageOffset + idx)} 条`"
                     @change="toggleRowSelection(pg.id, $event.target.checked)"
                   />
                 </td>
-                <td>第 {{ formatItemNo(pg.page_number, idx) }} 条</td>
+                <td>第 {{ formatItemNo(pg.page_number, displayedPageOffset + idx) }} 条</td>
                 <td><span :class="statusBadgeClass(pg.status)" class="badge">{{ statusLabel(pg.status) }}</span></td>
                 <td class="text-sm text-muted">{{ pg.expand?.first_proofreader?.name || pg.expand?.first_proofreader?.email || '—' }}</td>
                 <td class="text-sm text-muted">{{ pg.expand?.second_proofreader?.name || pg.expand?.second_proofreader?.email || '—' }}</td>
                 <td class="text-sm text-muted">{{ pg.mismatch_count || 0 }}</td>
                 <td class="text-sm text-muted" style="max-width:240px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
                   {{ pg.ocr_text?.slice(0, 80) || '—' }}
+                </td>
+                <td>
+                  <RouterLink
+                    v-if="pg.status === PAGE_STATUS.ARBITRATION"
+                    :to="`/admin/projects/${projectId}/arbitration/${pg.id}`"
+                    class="btn btn-warn btn-sm"
+                  >
+                    仲裁
+                  </RouterLink>
+                  <span v-else class="text-muted">—</span>
                 </td>
                 <td>
                   <div class="flex gap-2">
@@ -179,6 +320,28 @@
               </tr>
             </tbody>
           </table>
+          </div>
+          <nav v-if="listPagination.totalPages > 1" class="admin-pagination" aria-label="条目分页">
+            <button
+              type="button"
+              class="btn btn-secondary btn-sm"
+              :disabled="listPagination.page <= 1"
+              @click="currentListPage -= 1"
+            >
+              上一页
+            </button>
+            <span class="text-sm text-muted">
+              第 {{ listPagination.page }} / {{ listPagination.totalPages }} 页
+            </span>
+            <button
+              type="button"
+              class="btn btn-secondary btn-sm"
+              :disabled="listPagination.page >= listPagination.totalPages"
+              @click="currentListPage += 1"
+            >
+              下一页
+            </button>
+          </nav>
         </div>
       </div>
     </template>
@@ -186,13 +349,27 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, RouterLink } from 'vue-router'
-import { parseCsv } from '@/lib/csvParser'
+import { filterAdminPages, paginateItems, parseRangeInput } from '@/lib/adminPageList'
 import { safeParseRowJson } from '@/composables/useStructuredRow'
-import { PAGE_STATUS, PROOFREAD_PROGRESS_STATUSES, statusBadgeClass, statusLabel } from '@/constants/pageStatus'
-import { createPage, deletePage, getPagedProjectPages, listAllProjectPages, updatePage } from '@/services/pagesService'
-import { createProjectPdf } from '@/services/projectFilesService'
+import {
+  PAGE_STATUS,
+  PAGE_STATUS_LABELS,
+  PROOFREAD_PROGRESS_STATUSES,
+  statusBadgeClass,
+  statusLabel
+} from '@/constants/pageStatus'
+import {
+  deletePendingPages,
+  getPagedProjectPages,
+  listAllProjectPages,
+  reorderPendingPages
+} from '@/services/pagesService'
+import { createProjectPdf, getProjectFile } from '@/services/projectFilesService'
+import { commitCsvImport, createCsvInspection, getImportJob, listImportJobErrors } from '@/services/importJobsService'
+import { csvFatalMessage, parseCsvInspection } from '@/lib/csvInspection'
+import { toSafeCsvCell } from '@/lib/csvExport'
 import { getProject } from '@/services/projectsService'
 import { getPbMessage, getPbStatus } from '@/utils/pbErrors'
 
@@ -202,6 +379,7 @@ const projectId = Array.isArray(route.params.id) ? route.params.id[0] : route.pa
 const project = ref(null)
 const projectError = ref('')
 const pages = ref([])
+const pagesError = ref('')
 const loadingProject = ref(true)
 const loadingPages = ref(true)
 const pageStats = ref({ total: 0, proofread: 0, approved: 0 })
@@ -213,15 +391,29 @@ const csvFile = ref(null)
 const uploadingPdf = ref(false)
 const uploadingCsv = ref(false)
 const mutatingRows = ref(false)
+const mutationSuccess = ref('')
+const mutationError = ref('')
 const pdfSuccess = ref(false)
+const pdfMetadata = ref(null)
+const pdfProcessing = ref(false)
 const pdfError = ref('')
 const csvSuccess = ref('')
 const csvError = ref('')
+const csvJob = ref(null)
+const csvImportErrors = ref([])
 const exportingCsv = ref(false)
 const exportError = ref('')
 const exportSuccess = ref('')
 const selectedPendingIds = ref([])
 const rangeSelectInput = ref('')
+const searchQuery = ref('')
+const selectedStatus = ref('')
+const currentListPage = ref(1)
+const listPageSize = ref(25)
+let pdfPollGeneration = 0
+let csvPollGeneration = 0
+
+const statusOptions = Object.entries(PAGE_STATUS_LABELS).map(([value, label]) => ({ value, label }))
 
 const approvedPct = computed(() => {
   if (!pageStats.value.total) return 0
@@ -229,6 +421,18 @@ const approvedPct = computed(() => {
 })
 
 const pendingPages = computed(() => pages.value.filter((p) => p.status === PAGE_STATUS.PENDING))
+const filteredPages = computed(() => filterAdminPages(pages.value, {
+  query: searchQuery.value,
+  status: selectedStatus.value
+}))
+const listPagination = computed(() => paginateItems(
+  filteredPages.value,
+  currentListPage.value,
+  listPageSize.value
+))
+const displayedPages = computed(() => listPagination.value.items)
+const displayedPageOffset = computed(() => (listPagination.value.page - 1) * listPagination.value.perPage)
+const hasActiveListFilter = computed(() => Boolean(searchQuery.value.trim() || selectedStatus.value))
 const allPendingSelected = computed(() => {
   if (!pendingPages.value.length) return false
   return pendingPages.value.every((p) => selectedPendingIds.value.includes(p.id))
@@ -239,6 +443,32 @@ const pendingIndexById = computed(() => {
     map[p.id] = i
   })
   return map
+})
+const csvJobProgress = computed(() => {
+  const processed = Number(csvJob.value?.processed_count || 0)
+  const total = Number(csvJob.value?.total_count || 0)
+  if (['validated', 'completed', 'completed_with_errors'].includes(csvJob.value?.status)) return 100
+  if (!total) return ['inspecting', 'processing'].includes(csvJob.value?.status) ? 10 : 0
+  return Math.min(99, Math.round((processed / total) * 100))
+})
+const csvJobStatusLabel = computed(() => ({
+  inspecting: '后端正在预检',
+  validated: '后端预检完成',
+  queued: '等待后端处理',
+  processing: '后端正在导入',
+  completed: '导入完成',
+  completed_with_errors: '导入完成，部分条目已跳过',
+  failed: '导入失败'
+})[csvJob.value?.status] || '准备导入')
+const csvInspection = computed(() => parseCsvInspection(csvJob.value?.inspection_json))
+const csvPreviewHeaders = computed(() => csvInspection.value?.headers.slice(0, 6) || [])
+
+watch([searchQuery, selectedStatus, listPageSize], () => {
+  currentListPage.value = 1
+})
+
+watch(() => listPagination.value.page, (page) => {
+  if (currentListPage.value !== page) currentListPage.value = page
 })
 
 onMounted(async () => {
@@ -262,10 +492,16 @@ onMounted(async () => {
   await loadPages()
 })
 
+onBeforeUnmount(() => {
+  pdfPollGeneration += 1
+  csvPollGeneration += 1
+})
+
 async function loadPages() {
   loadingPages.value = true
+  pagesError.value = ''
   try {
-    const perPage = 50
+    const perPage = 500
     const allPages = []
     let page = 1
     let result
@@ -282,15 +518,28 @@ async function loadPages() {
     pageStats.value.proofread = allPages.filter(p => PROOFREAD_PROGRESS_STATUSES.includes(p.status)).length
     pageStats.value.approved = allPages.filter(p => p.status === PAGE_STATUS.APPROVED).length
   } catch (e) {
-    console.error(e)
+    pagesError.value = getPbMessage(e, '条目列表加载失败，请稍后重试。')
   } finally {
     loadingPages.value = false
   }
 }
 
+function resetListFilters() {
+  searchQuery.value = ''
+  selectedStatus.value = ''
+  currentListPage.value = 1
+}
+
+function clearMutationFeedback() {
+  mutationSuccess.value = ''
+  mutationError.value = ''
+}
+
 function onPdfSelected(e) {
   pdfFile.value = e.target.files[0] || null
   pdfSuccess.value = false
+  pdfMetadata.value = null
+  pdfProcessing.value = false
   pdfError.value = ''
 }
 
@@ -298,21 +547,42 @@ function onCsvSelected(e) {
   csvFile.value = e.target.files[0] || null
   csvSuccess.value = ''
   csvError.value = ''
+  csvJob.value = null
+  csvImportErrors.value = []
 }
 
 async function uploadPdf() {
   if (!pdfFile.value) return
   uploadingPdf.value = true
   pdfError.value = ''
+  pdfSuccess.value = false
+  pdfMetadata.value = null
+  pdfProcessing.value = false
+  const generation = ++pdfPollGeneration
   try {
-    await createProjectPdf({ projectId, file: pdfFile.value })
-    pdfSuccess.value = true
+    let record = await createProjectPdf({ projectId, file: pdfFile.value })
+    pdfProcessing.value = record.status === 'processing'
     pdfFile.value = null
     if (pdfInput.value) pdfInput.value.value = ''
+    while (record.status === 'processing' && generation === pdfPollGeneration) {
+      await pollDelay(1000)
+      record = await getProjectFile(record.id)
+    }
+    if (generation !== pdfPollGeneration) return
+    pdfProcessing.value = false
+    if (record.status === 'ready') {
+      pdfSuccess.value = true
+      pdfMetadata.value = record
+    } else {
+      pdfError.value = record.error_message || 'PDF 后端校验失败'
+    }
   } catch (e) {
-    pdfError.value = getPbMessage(e, '上传失败，请重试')
+    pdfError.value = getPbStatus(e) === 413
+      ? 'PDF 文件超过 50 MB 上限'
+      : getPbMessage(e, '上传失败，请重试')
+    pdfProcessing.value = false
   } finally {
-    uploadingPdf.value = false
+    if (generation === pdfPollGeneration) uploadingPdf.value = false
   }
 }
 
@@ -321,71 +591,83 @@ async function uploadCsv() {
   uploadingCsv.value = true
   csvError.value = ''
   csvSuccess.value = ''
+  csvJob.value = null
+  csvImportErrors.value = []
+  const generation = ++csvPollGeneration
   try {
-    const text = await readCsvText(csvFile.value)
-    const rows = parseCsv(text.replace(/^\uFEFF/, ''))
-    if (!rows.length) throw new Error('CSV 文件为空或无法读取有效行')
-
-    const headerKeys = Object.keys(rows[0] || {})
-    const pdfPageKey = headerKeys.find((k) => k.trim() === 'PDF页码')
-    if (!pdfPageKey) {
-      throw new Error('CSV 缺少必填字段：PDF页码')
-    }
-
-    // Determine next page number from existing pages.
-    const existingPages = await listAllProjectPages(projectId, {
-      fields: 'page_number'
-    })
-    let nextPageNum = existingPages.reduce((max, p) => {
-      const n = Number(p.page_number)
-      return Number.isFinite(n) ? Math.max(max, n) : max
-    }, 0) + 1
-
-    let created = 0
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i]
-      const pdfPageRaw = String(row[pdfPageKey] ?? '').trim()
-      const pdfPage = Number(pdfPageRaw)
-      if (!Number.isInteger(pdfPage) || pdfPage <= 0) {
-        throw new Error(`第 ${i + 2} 行的 PDF页码 无效，请填写正整数`)
-      }
-
-      const structuredRow = {}
-      const parts = []
-      for (const [key, value] of Object.entries(row)) {
-        if (key.trim() === 'PDF页码') continue
-        const textPart = String(value ?? '').trim()
-        structuredRow[key] = textPart
-        if (textPart) parts.push(textPart)
-      }
-      const entryText = parts.join(' ').trim()
-      if (!entryText) {
-        throw new Error(`第 ${i + 2} 行去掉 PDF页码 后内容为空`)
-      }
-
-      await createPage({
-        project: projectId,
-        page_number: nextPageNum++,
-        pdf_page: pdfPage,
-        ocr_row_json: JSON.stringify(structuredRow),
-        ocr_text: entryText,
-        proofread_round: 1,
-        mismatch_count: 0,
-        status: PAGE_STATUS.PENDING
-      })
-      created++
-    }
-
-    csvSuccess.value = `成功导入 ${created} 条待校对任务！`
-    selectedPendingIds.value = []
+    let job = await createCsvInspection({ projectId, file: csvFile.value })
+    csvJob.value = job
     csvFile.value = null
     if (csvInput.value) csvInput.value.value = ''
+    while (['inspecting', 'queued', 'processing'].includes(job.status) && generation === csvPollGeneration) {
+      await pollDelay(1000)
+      job = await getImportJob(job.id)
+      csvJob.value = job
+    }
+    if (generation !== csvPollGeneration) return
+
+    if (job.status === 'failed') {
+      csvError.value = csvFatalMessage(job)
+    } else if (job.status === 'validated') {
+      const inspection = parseCsvInspection(job.inspection_json)
+      csvSuccess.value = inspection
+        ? `后端预检完成：${inspection.validRows} 条可导入，${inspection.invalidRows} 条需跳过。请确认后开始导入。`
+        : '后端预检完成，请确认后开始导入。'
+      if (job.failed_count > 0) {
+        const result = await listImportJobErrors(job.id, 1, 100)
+        csvImportErrors.value = result.items
+      }
+    } else if (['completed', 'completed_with_errors'].includes(job.status)) {
+      csvSuccess.value = '相同文件已经导入，无需重复处理。'
+      await loadPages()
+    }
+  } catch (e) {
+    csvError.value = getPbStatus(e) === 413
+      ? 'CSV 文件超过 50 MB 上限'
+      : getPbMessage(e, '导入失败，请检查文件格式')
+  } finally {
+    if (generation === csvPollGeneration) uploadingCsv.value = false
+  }
+}
+
+async function confirmCsvImport() {
+  if (csvJob.value?.status !== 'validated') return
+  uploadingCsv.value = true
+  csvError.value = ''
+  csvSuccess.value = ''
+  csvImportErrors.value = []
+  const generation = ++csvPollGeneration
+  try {
+    let job = await commitCsvImport(csvJob.value.id)
+    csvJob.value = job
+    while (['queued', 'processing'].includes(job.status) && generation === csvPollGeneration) {
+      await pollDelay(1000)
+      job = await getImportJob(job.id)
+      csvJob.value = job
+    }
+    if (generation !== csvPollGeneration) return
+    if (job.status === 'failed') {
+      csvError.value = csvFatalMessage(job)
+      return
+    }
+    csvSuccess.value = job.failed_count > 0
+      ? `成功导入 ${job.success_count} 条，跳过 ${job.failed_count} 条错误记录。`
+      : `成功导入 ${job.success_count} 条待校对任务！`
+    if (job.failed_count > 0) {
+      const result = await listImportJobErrors(job.id, 1, 100)
+      csvImportErrors.value = result.items
+    }
+    selectedPendingIds.value = []
     await loadPages()
   } catch (e) {
-    csvError.value = e?.message || '导入失败，请检查文件格式'
+    csvError.value = getPbMessage(e, '确认导入失败，请稍后重试。')
   } finally {
-    uploadingCsv.value = false
+    if (generation === csvPollGeneration) uploadingCsv.value = false
   }
+}
+
+function pollDelay(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms))
 }
 
 async function exportCsv() {
@@ -417,10 +699,10 @@ async function exportCsv() {
     })
 
     const finalHeaders = ['PDF页码', ...headers]
-    const lines = [finalHeaders.map(toCsvCell).join(',')]
+    const lines = [finalHeaders.map(toSafeCsvCell).join(',')]
     for (const row of rows) {
       const values = [row.pageNumber, ...headers.map((h) => row.rowObj[h] ?? '')]
-      lines.push(values.map(toCsvCell).join(','))
+      lines.push(values.map(toSafeCsvCell).join(','))
     }
 
     const csvText = '\uFEFF' + lines.join('\r\n')
@@ -441,53 +723,6 @@ async function exportCsv() {
   } finally {
     exportingCsv.value = false
   }
-}
-
-async function readCsvText(file) {
-  const buffer = await file.arrayBuffer()
-  const bytes = new Uint8Array(buffer)
-
-  // Try UTF-8 first, then common Chinese CSV encodings.
-  const candidates = ['utf-8', 'gb18030', 'gbk']
-  let best = ''
-  let bestScore = Number.POSITIVE_INFINITY
-
-  for (const encoding of candidates) {
-    try {
-      const decoded = new TextDecoder(encoding, { fatal: false }).decode(bytes)
-      const score = textGarbleScore(decoded)
-      if (score < bestScore) {
-        best = decoded
-        bestScore = score
-      }
-      // Clean UTF-8 result: return early for speed and stability.
-      if (encoding === 'utf-8' && score === 0) return decoded
-    } catch {
-      // Ignore unsupported encodings and continue fallback.
-    }
-  }
-
-  if (!best) {
-    throw new Error('CSV 文件编码无法识别，请保存为 UTF-8 或 GB18030 后重试')
-  }
-  return best
-}
-
-function textGarbleScore(text) {
-  if (!text) return 0
-  // Replacement char usually indicates decode mismatch.
-  const replacementCount = (text.match(/\uFFFD/g) || []).length
-  // Null chars are also a strong signal of broken decoding.
-  const nullCount = (text.match(/\u0000/g) || []).length
-  return replacementCount * 10 + nullCount
-}
-
-function toCsvCell(value) {
-  const str = String(value ?? '')
-  if (/[",\r\n]/.test(str)) {
-    return `"${str.replace(/"/g, '""')}"`
-  }
-  return str
 }
 
 function isPending(row) {
@@ -530,60 +765,30 @@ async function movePendingRow(id, direction) {
   if (targetIdx < 0 || targetIdx >= pendingPages.value.length) return
 
   const current = pendingPages.value[idx]
-  const target = pendingPages.value[targetIdx]
-  if (!current || !target) return
+  if (!current || !pendingPages.value[targetIdx]) return
 
   mutatingRows.value = true
+  clearMutationFeedback()
   try {
-    const maxPageNum = pages.value.reduce((max, p) => {
-      const n = Number(p.page_number)
-      return Number.isFinite(n) ? Math.max(max, n) : max
-    }, 0)
-    const tempPageNum = maxPageNum + 1
     const currentPageNum = Number(current.page_number)
-    const targetPageNum = Number(target.page_number)
-
-    await updatePage(current.id, { page_number: tempPageNum })
-    await updatePage(target.id, { page_number: currentPageNum })
-    await updatePage(current.id, { page_number: targetPageNum })
+    const orderedIds = pendingPages.value.map((page) => page.id)
+    ;[orderedIds[idx], orderedIds[targetIdx]] = [orderedIds[targetIdx], orderedIds[idx]]
+    await reorderPendingPages(projectId, orderedIds)
     await loadPages()
+    mutationSuccess.value = `第 ${currentPageNum} 条已${direction < 0 ? '上移' : '下移'}。`
   } catch (e) {
-    alert(getPbMessage(e, '顺序调整失败，请重试'))
+    mutationError.value = getPbMessage(e, '顺序调整失败，请重试')
   } finally {
     mutatingRows.value = false
   }
 }
 
-function parseRangeInput(text, max) {
-  const raw = String(text || '').trim()
-  if (!raw) return []
-  const indices = new Set()
-  const parts = raw.split(',').map((s) => s.trim()).filter(Boolean)
-
-  for (const part of parts) {
-    if (part.includes('-')) {
-      const [startStr, endStr] = part.split('-').map((s) => s.trim())
-      const start = Number(startStr)
-      const end = Number(endStr)
-      if (!Number.isInteger(start) || !Number.isInteger(end)) continue
-      const from = Math.max(1, Math.min(start, end))
-      const to = Math.min(max, Math.max(start, end))
-      for (let i = from; i <= to; i++) indices.add(i - 1)
-    } else {
-      const n = Number(part)
-      if (!Number.isInteger(n)) continue
-      if (n >= 1 && n <= max) indices.add(n - 1)
-    }
-  }
-
-  return Array.from(indices).sort((a, b) => a - b)
-}
-
 function selectByRange() {
   if (mutatingRows.value) return
+  clearMutationFeedback()
   const indexes = parseRangeInput(rangeSelectInput.value, pages.value.length)
   if (!indexes.length) {
-    alert('范围格式无效，请输入如 1-33 或 1,3,5-8')
+    mutationError.value = '范围格式无效，请输入如 1-33 或 1,3,5-8。'
     return
   }
 
@@ -595,25 +800,15 @@ function selectByRange() {
 
   selectedPendingIds.value = ids
   if (!ids.length) {
-    alert('该范围内没有可操作的待校对条目（仅 pending 可选）')
+    mutationError.value = '该范围内没有可操作的待校对条目（仅待校对状态可选）。'
+  } else {
+    mutationSuccess.value = `已按范围选择 ${ids.length} 条待校对条目。`
   }
 }
 
 async function applyPendingOrderByIds(orderedPendingIds) {
-  const pending = pendingPages.value
-  if (!pending.length) return
-  const pageNumbers = pending.map((p) => Number(p.page_number)).sort((a, b) => a - b)
-  const pendingById = Object.fromEntries(pending.map((p) => [p.id, p]))
-
-  for (let i = 0; i < orderedPendingIds.length; i++) {
-    const id = orderedPendingIds[i]
-    const row = pendingById[id]
-    if (!row) continue
-    const nextNo = pageNumbers[i]
-    if (Number(row.page_number) !== nextNo) {
-      await updatePage(id, { page_number: nextNo })
-    }
-  }
+  if (!orderedPendingIds.length) return
+  await reorderPendingPages(projectId, orderedPendingIds)
 }
 
 async function moveSelectedRowsDown() {
@@ -636,28 +831,22 @@ async function moveSelectedRowsDown() {
     }
   }
 
-  if (!moved) return
+  if (!moved) {
+    clearMutationFeedback()
+    mutationError.value = '所选条目已经位于可下移范围的末尾。'
+    return
+  }
 
   mutatingRows.value = true
+  clearMutationFeedback()
   try {
     await applyPendingOrderByIds(reordered)
     await loadPages()
+    mutationSuccess.value = `已下移 ${selectedPendingIds.value.length} 条待校对条目。`
   } catch (e) {
-    alert(getPbMessage(e, '批量下移失败，请重试'))
+    mutationError.value = getPbMessage(e, '批量下移失败，请重试')
   } finally {
     mutatingRows.value = false
-  }
-}
-
-async function resequenceAllRows() {
-  const all = await listAllProjectPages(projectId, {
-    fields: 'id,page_number'
-  })
-  for (let i = 0; i < all.length; i++) {
-    const desired = i + 1
-    if (Number(all[i].page_number) !== desired) {
-      await updatePage(all[i].id, { page_number: desired })
-    }
   }
 }
 
@@ -666,14 +855,16 @@ async function deleteSelectedRows() {
   const ok = window.confirm(`确认删除已选择的 ${selectedPendingIds.value.length} 条待校对条目吗？此操作不可恢复。`)
   if (!ok) return
 
+  const deleteCount = selectedPendingIds.value.length
   mutatingRows.value = true
+  clearMutationFeedback()
   try {
-    await Promise.all(selectedPendingIds.value.map((id) => deletePage(id)))
+    await deletePendingPages(projectId, selectedPendingIds.value)
     selectedPendingIds.value = []
-    await resequenceAllRows()
     await loadPages()
+    mutationSuccess.value = `已删除 ${deleteCount} 条待校对条目，并重新整理条号。`
   } catch (e) {
-    alert(getPbMessage(e, '批量删除失败，请重试'))
+    mutationError.value = getPbMessage(e, '批量删除失败，请重试')
   } finally {
     mutatingRows.value = false
   }

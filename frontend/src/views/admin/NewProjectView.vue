@@ -5,6 +5,17 @@
       <h2 class="font-bold" style="font-size:1.5rem">创建新项目</h2>
     </div>
 
+    <div class="alert mb-4" role="note">
+      <strong>创建后如何准备文件？</strong>
+      <p class="text-sm mt-2">
+        可仅上传 PDF（只提供原文预览）、仅导入 CSV（可校对但没有原文预览），
+        或先上传 PDF 再预检 CSV（推荐，条目会固定关联预检时的 PDF）。
+      </p>
+      <RouterLink class="text-sm" to="/admin/guide/project-files">
+        查看完整的 PDF、CSV 和校对页面说明
+      </RouterLink>
+    </div>
+
     <div class="card">
       <form @submit.prevent="handleSubmit">
         <div class="form-group">

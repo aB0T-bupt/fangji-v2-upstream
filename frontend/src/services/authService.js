@@ -1,4 +1,5 @@
 import pb from '@/lib/pocketbase'
+import { shouldClearAuthAfterRefreshError } from '@/lib/authRefresh'
 
 export function currentUserId(fallbackUser = null) {
   return pb.authStore.model?.id || fallbackUser?.id || null
@@ -10,6 +11,16 @@ export function currentUserRole(fallbackUser = null) {
 
 export async function loginWithPassword(email, password) {
   return pb.collection('users').authWithPassword(email, password)
+}
+
+export async function refreshStoredAuth() {
+  if (!pb.authStore.isValid) return null
+  try {
+    return await pb.collection('users').authRefresh({ requestKey: null })
+  } catch (error) {
+    if (shouldClearAuthAfterRefreshError(error)) pb.authStore.clear()
+    return null
+  }
 }
 
 export async function registerProofreader({ email, password, passwordConfirm, name }) {
