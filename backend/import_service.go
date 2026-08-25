@@ -618,7 +618,7 @@ func (s *importService) markFatal(work importWork, code, message string, cause e
 	}
 	record.Set("error_code", code)
 	record.Set("error_message", message)
-	if work.kind == "csv" {
+	if work.kind == "csv" || work.kind == "csv_inspect" {
 		record.Set("finished_at", types.NowDateTime())
 	}
 	if err := s.app.Dao().SaveRecord(record); err != nil {

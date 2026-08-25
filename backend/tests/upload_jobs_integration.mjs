@@ -131,6 +131,27 @@ try {
   assert.ok(pages.items.every((item) => item.import_job === job.id))
   assert.match(pages.items[1].ocr_text, /第一行\s+第二行/)
 
+  const invalidHeaderBody = new FormData()
+  invalidHeaderBody.set(
+    'file',
+    new Blob(['词条,释义\r\n天光,早晨'], { type: 'text/csv' }),
+    'missing-page-column.csv'
+  )
+  invalidHeaderBody.set('inspect_only', 'true')
+  const invalidHeaderRecord = await request(`/api/fangji/projects/${project.id}/imports/csv`, {
+    method: 'POST',
+    token,
+    body: invalidHeaderBody,
+    expected: 202
+  })
+  const invalidHeaderJob = await waitFor(
+    `/api/collections/import_jobs/records/${invalidHeaderRecord.id}`,
+    token,
+    ['failed']
+  )
+  assert.equal(invalidHeaderJob.error_code, 'CSV_HEADER_INVALID')
+  assert.ok(invalidHeaderJob.finished_at, 'failed CSV inspection must record its terminal time')
+
   const largeRows = ['\ufeffentry_id,page,词条,释义']
   for (let index = 1; index <= 1200; index += 1) {
     largeRows.push(`${index},${Math.ceil(index / 10)},词条${index},释义${index}`)
