@@ -9,7 +9,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/pocketbase .
 
 FROM alpine:3.24
 
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates curl
 
 COPY --from=builder /out/pocketbase /pb/pocketbase
 RUN chmod +x /pb/pocketbase
