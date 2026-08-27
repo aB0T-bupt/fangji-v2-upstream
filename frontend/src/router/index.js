@@ -57,9 +57,19 @@ const routes = [
         component: () => import('@/views/admin/NewProjectView.vue')
       },
       {
+        path: 'guide/project-files',
+        name: 'ProjectFilesGuide',
+        component: () => import('@/views/admin/ProjectFilesGuideView.vue')
+      },
+      {
         path: 'projects/:id',
         name: 'ProjectDetail',
         component: () => import('@/views/admin/ProjectDetailView.vue')
+      },
+      {
+        path: 'projects/:projectId/arbitration/:pageId',
+        name: 'Arbitration',
+        component: () => import('@/views/admin/ArbitrationView.vue')
       }
     ]
   },
