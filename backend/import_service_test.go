@@ -64,6 +64,40 @@ func TestNewRequestID(t *testing.T) {
 	}
 }
 
+func TestIsDiscardableImportPage(t *testing.T) {
+	tests := []struct {
+		name              string
+		status            string
+		proofreader       string
+		firstProofreader  string
+		secondProofreader string
+		hasAttempts       bool
+		want              bool
+	}{
+		{name: "pristine staged page", status: "importing", want: true},
+		{name: "published page", status: "pending"},
+		{name: "claimed page", status: "proofreading", proofreader: "user-1"},
+		{name: "first pass persisted", status: "importing", firstProofreader: "user-1"},
+		{name: "second pass persisted", status: "importing", secondProofreader: "user-2"},
+		{name: "attempt persisted", status: "importing", hasAttempts: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := isDiscardableImportPage(
+				test.status,
+				test.proofreader,
+				test.firstProofreader,
+				test.secondProofreader,
+				test.hasAttempts,
+			)
+			if got != test.want {
+				t.Fatalf("got %v; want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestLogUploadWritesStructuredJSON(t *testing.T) {
 	var output bytes.Buffer
 	previousWriter := log.Writer()

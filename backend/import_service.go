@@ -24,6 +24,7 @@ import (
 	"github.com/labstack/echo/v5/middleware"
 	pdfapi "github.com/pdfcpu/pdfcpu/pkg/api"
 	pdfmodel "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/core"
@@ -1092,7 +1093,16 @@ func (s *importService) processCSV(work importWork) {
 	job.Set("error_code", "")
 	job.Set("error_message", fmt.Sprintf("检测编码：%s", encodingName))
 	job.Set("finished_at", types.NowDateTime())
-	if err := s.app.Dao().SaveRecord(job); err != nil {
+	if err := s.app.Dao().RunInTransaction(func(txDao *daos.Dao) error {
+		if _, err := txDao.DB().NewQuery(
+			`UPDATE pages
+			 SET status = 'pending', updated = strftime('%Y-%m-%d %H:%M:%fZ')
+			 WHERE import_job = {:jobID} AND status = 'importing'`,
+		).Bind(dbx.Params{"jobID": jobID}).Execute(); err != nil {
+			return err
+		}
+		return txDao.SaveRecord(job)
+	}); err != nil {
 		s.markFatal(work, "JOB_FINALIZE_FAILED", "条目已处理，但作业状态更新失败。", err)
 		return
 	}
@@ -1122,6 +1132,26 @@ func (s *importService) clearJobArtifacts(jobID string) error {
 	if err != nil {
 		return err
 	}
+	var attemptCount int
+	if err := s.app.Dao().DB().NewQuery(
+		`SELECT COUNT(*)
+		 FROM proofreading_attempts attempts
+		 INNER JOIN pages ON pages.id = attempts.page
+		 WHERE pages.import_job = {:jobID}`,
+	).Bind(dbx.Params{"jobID": jobID}).Row(&attemptCount); err != nil {
+		return err
+	}
+	for _, page := range pagesToDelete {
+		if !isDiscardableImportPage(
+			page.GetString("status"),
+			page.GetString("proofreader"),
+			page.GetString("first_proofreader"),
+			page.GetString("second_proofreader"),
+			attemptCount > 0,
+		) {
+			return fmt.Errorf("refusing to delete published import page %s during recovery", page.Id)
+		}
+	}
 	errorsToDelete, err := s.app.Dao().FindRecordsByFilter(
 		"import_job_errors",
 		fmt.Sprintf("job = %q", jobID),
@@ -1145,6 +1175,14 @@ func (s *importService) clearJobArtifacts(jobID string) error {
 		}
 		return nil
 	})
+}
+
+func isDiscardableImportPage(status, proofreader, firstProofreader, secondProofreader string, hasAttempts bool) bool {
+	return status == "importing" &&
+		proofreader == "" &&
+		firstProofreader == "" &&
+		secondProofreader == "" &&
+		!hasAttempts
 }
 
 func decodedCSVReader(reader io.ReadSeeker) (io.Reader, string, error) {
@@ -1440,7 +1478,7 @@ func savePage(dao *daos.Dao, jobID, projectID, projectFileID string, pageNumber 
 	record.Set("ocr_text", row.entryText)
 	record.Set("proofread_round", 1)
 	record.Set("mismatch_count", 0)
-	record.Set("status", "pending")
+	record.Set("status", "importing")
 	return dao.SaveRecord(record)
 }
 

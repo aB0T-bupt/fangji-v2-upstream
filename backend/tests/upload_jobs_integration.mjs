@@ -129,6 +129,7 @@ try {
   )
   assert.equal(pages.totalItems, 2)
   assert.ok(pages.items.every((item) => item.import_job === job.id))
+  assert.ok(pages.items.every((item) => item.status === 'pending'))
   assert.match(pages.items[1].ocr_text, /第一行\s+第二行/)
 
   const invalidHeaderBody = new FormData()
@@ -212,6 +213,7 @@ try {
     { token }
   )
   assert.equal(importedAliasPages.totalItems, 1200)
+  assert.ok(importedAliasPages.items.every((item) => item.status === 'pending'))
   assert.equal(importedAliasPages.items.filter((item) => item.pdf_page === 1).length, 10)
   assert.deepEqual(JSON.parse(importedAliasPages.items[0].ocr_row_json), {
     entry_id: '1',
