@@ -516,58 +516,45 @@ routerAdd("GET", `${FANGJI_API}/proofreader-stats`, (c) => {
     throw new ForbiddenError("无权执行此操作")
   }
   const dao = $app.dao()
-  const attempts = dao.findRecordsByFilter(
-    "proofreading_attempts",
-    'kind = "first" || kind = "second"',
-    "created",
-    1000000,
-    0
-  )
-  const statsByUser = {}
+  const aggregated = arrayOf(new DynamicModel({
+    user_id: "",
+    project_count: 0,
+    proofread_count: 0,
+    evaluated_count: 0,
+    matched_count: 0
+  }))
+  dao.db()
+    .select(
+      "proofreader AS user_id",
+      "COUNT(DISTINCT project) AS project_count",
+      "COUNT(*) AS proofread_count",
+      "SUM(CASE WHEN outcome = 'matched' OR outcome = 'mismatched' THEN 1 ELSE 0 END) AS evaluated_count",
+      "SUM(CASE WHEN outcome = 'matched' THEN 1 ELSE 0 END) AS matched_count"
+    )
+    .from("proofreading_attempts")
+    .where($dbx.exp("proofreader != '' AND (kind = 'first' OR kind = 'second')"))
+    .groupBy("proofreader")
+    .all(aggregated)
 
-  for (const attempt of attempts) {
-    const userId = attempt.getString("proofreader")
-    if (!userId) continue
-    if (!statsByUser[userId]) {
-      statsByUser[userId] = {
-        userId,
-        projects: {},
-        proofreadCount: 0,
-        evaluatedCount: 0,
-        matchedCount: 0
-      }
-    }
-    const stats = statsByUser[userId]
-    const projectId = attempt.getString("project")
-    if (projectId) stats.projects[projectId] = true
-    stats.proofreadCount += 1
-    const outcome = attempt.getString("outcome")
-    if (outcome === "matched" || outcome === "mismatched") {
-      stats.evaluatedCount += 1
-      if (outcome === "matched") stats.matchedCount += 1
-    }
+  if (!aggregated.some((item) => item.user_id === auth.getId())) {
+    aggregated.push(new DynamicModel({
+      user_id: auth.getId(),
+      project_count: 0,
+      proofread_count: 0,
+      evaluated_count: 0,
+      matched_count: 0
+    }))
   }
 
-  if (!statsByUser[auth.getId()]) {
-    statsByUser[auth.getId()] = {
-      userId: auth.getId(),
-      projects: {},
-      proofreadCount: 0,
-      evaluatedCount: 0,
-      matchedCount: 0
-    }
-  }
-
-  const profiles = Object.keys(statsByUser).map((userId) => {
-    const item = statsByUser[userId]
+  const profiles = aggregated.map((item) => {
     return {
-      userId,
-      projectCount: Object.keys(item.projects).length,
-      proofreadCount: item.proofreadCount,
-      evaluatedCount: item.evaluatedCount,
-      correctCount: item.matchedCount,
-      accuracy: item.evaluatedCount
-        ? Math.round(item.matchedCount / item.evaluatedCount * 1000) / 10
+      userId: item.user_id,
+      projectCount: item.project_count,
+      proofreadCount: item.proofread_count,
+      evaluatedCount: item.evaluated_count,
+      correctCount: item.matched_count,
+      accuracy: item.evaluated_count
+        ? Math.round(item.matched_count / item.evaluated_count * 1000) / 10
         : 0
     }
   })

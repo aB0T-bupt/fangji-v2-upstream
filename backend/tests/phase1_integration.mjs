@@ -229,6 +229,9 @@ try {
   assert.equal(stats.proofreadCount, 2)
   assert.equal(stats.evaluatedCount, 2)
   assert.equal(stats.accuracy, 50)
+  assert.equal(stats.accuracyRank, 1)
+  assert.equal(stats.proofreadRank, 1)
+  assert.equal(stats.rankedProofreaderCount, 2)
 
   console.log('Phase 1 integration test passed.')
 } finally {
