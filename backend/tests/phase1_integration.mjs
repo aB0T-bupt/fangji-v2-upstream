@@ -216,7 +216,10 @@ try {
   const matchingSubmit = await request(`/api/fangji/pages/${matchingPage.id}/submit`, {
     method: 'POST',
     token: secondUser.token,
-    body: { rowJson: JSON.stringify(matchingRow), text: '食饭 吃饭' }
+    body: {
+      rowJson: JSON.stringify({ 词条: '  食饭', 释义: '吃饭  ' }),
+      text: '食饭 吃饭'
+    }
   })
   assert.equal(matchingSubmit.status, 'approved')
 

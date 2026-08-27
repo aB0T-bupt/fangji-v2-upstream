@@ -205,7 +205,7 @@ routerAdd("POST", `${FANGJI_API}/pages/:pageId/submit`, (c) => {
   }
   const canonicalizeRow = (parsed) => {
     const result = {}
-    Object.keys(parsed).sort().forEach((key) => { result[key] = parsed[key] })
+    Object.keys(parsed).sort().forEach((key) => { result[key] = parsed[key].trim() })
     return JSON.stringify(result)
   }
   const composeRowText = (keys, parsed) => keys.map((key) => parsed[key].trim()).filter(Boolean).join(" ")
